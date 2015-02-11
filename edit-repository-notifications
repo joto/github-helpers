@@ -1,0 +1,79 @@
+#!/usr/bin/ruby
+#
+#  edit-repository-notification
+#
+
+require 'octokit'
+require 'tempfile'
+
+Octokit.auto_paginate = true
+
+token = `git config github-helpers.token`.chomp
+client = Octokit::Client.new(:access_token => token)
+
+# Get all repositories the user has access to
+organizations = client.organizations
+
+repositories = []
+repositories << client.repos
+organizations.each do |org|
+    repositories << client.org_repos(org.login)
+end
+
+repositories.flatten!
+
+# Get all repositories the user has subscriptions for
+subscriptions = client.subscriptions
+
+# Make a master list of all repositories and whether user is subscribed
+subs = {}
+repositories.each do |repos|
+    subs[repos.full_name] = false
+end
+subscriptions.each do |repos|
+    subs[repos.full_name] = true
+end
+
+# Create temp file with the list and let the user edit it
+tmp = Tempfile.new("edit-repository-notifications-list")
+
+subs.keys.sort.each do |name|
+    tmp.puts "#{ subs[name] ? 'S' : 'U' } #{name}"
+end
+
+tmp.close
+
+editor = ENV['VISUAL'] || ENV['EDITOR'] || 'vi'
+
+system(editor, tmp.path);
+
+tmp.open
+
+# Read back tmp file and create todo lists for (un)subscriptions
+todo_unsub = []
+todo_sub = []
+tmp.each_line do |line|
+    l = line.chomp.split(' ')
+    has_subs = (l[0]=='S')
+    name = l[1]
+    if subs[name] and !has_subs
+        todo_unsub << name
+    elsif !subs[name] and has_subs
+        todo_sub << name
+    end
+end
+
+tmp.unlink
+
+# Handle all unsubcriptions...
+todo_unsub.each do |repos|
+    puts "Unsubscribe #{repos}..."
+    client.delete_subscription(repos)
+end
+
+# Handle unsubcriptions...
+todo_sub.each do |repos|
+    puts "Subscribe #{repos}"
+    client.update_subscription(repos, {subscribed: true})
+end
+
